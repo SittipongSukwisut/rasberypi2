@@ -1,0 +1,593 @@
+import cv2
+import os
+import json
+import time
+from datetime import datetime
+from supabase import create_client
+
+
+# ============================================================
+#                  WOODSCAN
+#                  QR SCANNER
+#                  + SUPABASE
+# ============================================================
+
+
+# ============================================================
+#                  SUPABASE
+# ============================================================
+
+SUPABASE_URL = "https://stnymeuygiyfojlxprlc.supabase.co"
+
+SUPABASE_KEY = "sb_publishable_6quouvi0nmu3uqpXEiYHqQ_z0z3t0jU"
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
+
+
+# ============================================================
+#                  SETTINGS
+# ============================================================
+
+RESULT_FILE = "/home/com/qr_result.json"
+
+# Storage Bucket
+BUCKET_NAME = "qr-images"
+
+# Database Table
+TABLE_NAME = "qr_records"
+
+CAMERA_ID = 0
+
+IMAGE_WIDTH = 1280
+IMAGE_HEIGHT = 720
+
+
+# ============================================================
+#                  UPLOAD QR IMAGE
+# ============================================================
+
+def upload_qr_image(image):
+
+    filename = (
+        "qr_"
+        + datetime.now().strftime("%Y%m%d_%H%M%S")
+        + ".jpg"
+    )
+
+    local_path = "/home/com/" + filename
+
+    try:
+
+        # ----------------------------------------------------
+        # SAVE IMAGE TO RASPBERRY PI
+        # ----------------------------------------------------
+
+        success = cv2.imwrite(
+            local_path,
+            image
+        )
+
+        if not success:
+
+            print("ไม่สามารถบันทึกรูปลง Raspberry Pi")
+
+            return None
+
+
+        print("บันทึกรูป QR ชั่วคราวแล้ว")
+        print("ไฟล์ :", local_path)
+
+
+        # ----------------------------------------------------
+        # READ IMAGE
+        # ----------------------------------------------------
+
+        with open(
+            local_path,
+            "rb"
+        ) as f:
+
+            image_bytes = f.read()
+
+
+        # ----------------------------------------------------
+        # UPLOAD TO SUPABASE STORAGE
+        # ----------------------------------------------------
+
+        print("กำลังอัปโหลดรูป QR ไป Supabase...")
+
+
+        result = (
+            supabase
+            .storage
+            .from_(BUCKET_NAME)
+            .upload(
+                filename,
+                image_bytes,
+                {
+                    "content-type": "image/jpeg",
+                    "upsert": False
+                }
+            )
+        )
+
+
+        print("อัปโหลดรูป QR สำเร็จ")
+
+
+        # ----------------------------------------------------
+        # GET PUBLIC URL
+        # ----------------------------------------------------
+
+        public_url = (
+            supabase
+            .storage
+            .from_(BUCKET_NAME)
+            .get_public_url(filename)
+        )
+
+
+        print("")
+        print("========================================")
+        print("SUPABASE QR IMAGE")
+        print("========================================")
+        print("File :", filename)
+        print("URL  :", public_url)
+        print("========================================")
+        print("")
+
+
+        # ----------------------------------------------------
+        # DELETE TEMPORARY IMAGE
+        # ----------------------------------------------------
+
+        try:
+
+            os.remove(local_path)
+
+            print("ลบรูปชั่วคราวออกจาก Raspberry Pi แล้ว")
+
+        except Exception:
+
+            pass
+
+
+        return public_url
+
+
+    except Exception as e:
+
+        print("")
+        print("========================================")
+        print("UPLOAD QR IMAGE ERROR")
+        print("========================================")
+        print(e)
+        print("========================================")
+        print("")
+
+        return None
+
+
+# ============================================================
+#                  CREATE QR DATABASE RECORD
+# ============================================================
+
+def create_qr_record(
+    qr_data,
+    qr_image_url
+):
+
+    try:
+
+        insert_data = {
+
+            "qr_code": qr_data,
+
+            "qr_data": qr_data,
+
+            "qr_image_path": qr_image_url,
+
+            "status": "รอวัดขนาด"
+        }
+
+
+        print("กำลังบันทึกข้อมูล QR ลง Database...")
+
+
+        result = (
+            supabase
+            .table(TABLE_NAME)
+            .insert(insert_data)
+            .execute()
+        )
+
+
+        if not result.data:
+
+            print("ไม่สามารถสร้าง QR Record ได้")
+
+            return None
+
+
+        record_id = result.data[0]["id"]
+
+
+        print("")
+        print("สร้าง QR Database Record สำเร็จ")
+        print("Record ID :", record_id)
+        print("")
+
+
+        return record_id
+
+
+    except Exception as e:
+
+        print("")
+        print("========================================")
+        print("SUPABASE DATABASE ERROR")
+        print("========================================")
+        print(e)
+        print("========================================")
+        print("")
+
+        return None
+
+
+# ============================================================
+#                  SAVE LOCAL RESULT
+# ============================================================
+
+def save_local_record(
+    record_id,
+    qr_data,
+    qr_image_url
+):
+
+    data = {
+
+        "id": record_id,
+
+        "qr_code": qr_data,
+
+        "qr_data": qr_data,
+
+        "qr_image_path": qr_image_url,
+
+        "timestamp": datetime.now().isoformat(),
+
+        "status": "รอวัดขนาด"
+    }
+
+
+    try:
+
+        with open(
+            RESULT_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                data,
+                f,
+                ensure_ascii=False,
+                indent=4
+            )
+
+
+        print("บันทึก QR Record ID ลงเครื่องแล้ว")
+        print("ไฟล์ :", RESULT_FILE)
+
+
+    except Exception as e:
+
+        print("บันทึก JSON ไม่สำเร็จ")
+        print(e)
+
+
+# ============================================================
+#                  CAMERA
+# ============================================================
+
+cap = cv2.VideoCapture(
+    CAMERA_ID
+)
+
+
+cap.set(
+    cv2.CAP_PROP_FRAME_WIDTH,
+    IMAGE_WIDTH
+)
+
+cap.set(
+    cv2.CAP_PROP_FRAME_HEIGHT,
+    IMAGE_HEIGHT
+)
+
+
+if not cap.isOpened():
+
+    print("")
+    print("========================================")
+    print("เปิดกล้องไม่ได้")
+    print("========================================")
+    print("ลองเปลี่ยน CAMERA_ID = 1")
+    print("========================================")
+
+    exit()
+
+
+# ============================================================
+#                  QR DETECTOR
+# ============================================================
+
+qr_detector = cv2.QRCodeDetector()
+
+
+print("")
+print("========================================")
+print("             QR SCANNER")
+print("========================================")
+print("")
+print("นำ QR ของห่อไม้มาสแกน")
+print("")
+print("Q = ออกจากโปรแกรม")
+print("")
+print("========================================")
+print("")
+
+
+# ============================================================
+#                  MAIN LOOP
+# ============================================================
+
+while True:
+
+    ret, frame = cap.read()
+
+
+    if not ret:
+
+        print("อ่านกล้องไม่ได้")
+
+        break
+
+
+    # --------------------------------------------------------
+    # DETECT QR
+    # --------------------------------------------------------
+
+    try:
+
+        data, points, _ = (
+            qr_detector.detectAndDecode(
+                frame
+            )
+        )
+
+    except Exception:
+
+        data = ""
+
+        points = None
+
+
+    # --------------------------------------------------------
+    # DRAW QR BOX
+    # --------------------------------------------------------
+
+    if points is not None:
+
+        try:
+
+            points = points.astype(int)
+
+
+            for i in range(4):
+
+                p1 = tuple(
+                    points[0][i]
+                )
+
+                p2 = tuple(
+                    points[0][
+                        (i + 1) % 4
+                    ]
+                )
+
+
+                cv2.line(
+                    frame,
+                    p1,
+                    p2,
+                    (0, 255, 0),
+                    3
+                )
+
+
+        except Exception:
+
+            pass
+
+
+    # --------------------------------------------------------
+    # UI
+    # --------------------------------------------------------
+
+    cv2.rectangle(
+        frame,
+        (350, 150),
+        (930, 570),
+        (255, 255, 255),
+        2
+    )
+
+
+    cv2.putText(
+        frame,
+        "SCAN QR CODE",
+        (430, 110),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.2,
+        (0, 255, 0),
+        3
+    )
+
+
+    cv2.putText(
+        frame,
+        "Q = QUIT",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2
+    )
+
+
+    # --------------------------------------------------------
+    # QR FOUND
+    # --------------------------------------------------------
+
+    if data:
+
+        print("")
+        print("========================================")
+        print("พบ QR CODE")
+        print("========================================")
+        print("QR DATA :", data)
+        print("========================================")
+        print("")
+
+
+        # ----------------------------------------------------
+        # UPLOAD QR IMAGE
+        # ----------------------------------------------------
+
+        qr_image_url = upload_qr_image(
+            frame
+        )
+
+
+        if qr_image_url is None:
+
+            print("ไม่สามารถอัปโหลดรูป QR")
+
+            continue
+
+
+        # ----------------------------------------------------
+        # CREATE DATABASE RECORD
+        # ----------------------------------------------------
+
+        record_id = create_qr_record(
+            data,
+            qr_image_url
+        )
+
+
+        if record_id is None:
+
+            print("สร้าง QR Record ไม่สำเร็จ")
+
+            continue
+
+
+        # ----------------------------------------------------
+        # SAVE LOCAL JSON
+        # ----------------------------------------------------
+
+        save_local_record(
+            record_id,
+            data,
+            qr_image_url
+        )
+
+
+        # ----------------------------------------------------
+        # SUCCESS
+        # ----------------------------------------------------
+
+        print("")
+        print("========================================")
+        print("       บันทึก QR สำเร็จ")
+        print("========================================")
+        print("")
+        print("Record ID :", record_id)
+        print("QR Data   :", data)
+        print("")
+        print("รูป QR ถูกบันทึกใน Supabase Storage")
+        print("")
+        print("Image URL :")
+        print(qr_image_url)
+        print("")
+        print("สถานะ : รอวัดขนาด")
+        print("")
+        print("========================================")
+        print("")
+
+
+        cv2.putText(
+            frame,
+            "QR SAVED",
+            (450, 650),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 255, 0),
+            3
+        )
+
+
+        cv2.imshow(
+            "QR Scanner",
+            frame
+        )
+
+
+        cv2.waitKey(2000)
+
+
+        break
+
+
+    # --------------------------------------------------------
+    # SHOW CAMERA
+    # --------------------------------------------------------
+
+    cv2.imshow(
+        "QR Scanner",
+        frame
+    )
+
+
+    key = (
+        cv2.waitKey(1)
+        & 0xFF
+    )
+
+
+    if (
+        key == ord("q")
+        or
+        key == ord("Q")
+    ):
+
+        break
+
+
+# ============================================================
+#                  CLOSE CAMERA
+# ============================================================
+
+cap.release()
+
+cv2.destroyAllWindows()
+
+
+print("")
+print("ปิด QR Scanner แล้ว")
+print("")
